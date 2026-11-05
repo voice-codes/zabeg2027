@@ -43,6 +43,9 @@
     bonusByCategory: {},  // счётчики по категориям, игроку не показываются
     bonusPopups: [],      // всплывающие надписи «+Английский»
 
+    // «Второе дыхание»: доп. жизнь, появляется один раз за уровень
+    secondWind: { used: false, started: false, timer: 0 },
+
     running: false,
     rafId: 0,
     lastTime: 0
@@ -556,8 +559,13 @@
       ctx.arc(x, y, b.r, 0, Math.PI * 2);
       ctx.fill();
 
-      // Тёмно-синяя иконка категории, растёт вместе с кругом
-      drawBonusIcon(b.icon, x, y - b.r * 0.08, b.r * 0.56);
+      if (b.type === 'life') {
+        // «Второе дыхание»: сердечко вместо иконки категории
+        drawHeart(x, y, b.r * 0.6, C.deep);
+      } else {
+        // Тёмно-синяя иконка категории, растёт вместе с кругом
+        drawBonusIcon(b.icon, x, y - b.r * 0.08, b.r * 0.56);
+      }
 
       // Подпись под кругом
       drawBonusLabel(b.name, x, y + b.r + 4);
@@ -951,6 +959,9 @@
     state.bonusPool = bonusList();
     state.bonusPlan = planBonusPositions(state.bonusCount);
 
+    // «Второе дыхание» на новом уровне ещё не появлялось
+    state.secondWind = { used: false, started: false, timer: 0 };
+
     draw();
   }
 
@@ -1061,6 +1072,46 @@
     }
   }
 
+  // «Второе дыхание»: условие — ровно 1 жизнь и 30–85% дистанции.
+  // После выполнения ждём ~2 с и ставим сердечко впереди героя.
+  function updateSecondWind(dt) {
+    const cfg = CONFIG.secondWind;
+    const sw = state.secondWind;
+    if (sw.used) return;
+
+    const progress = state.worldX / CONFIG.level.distance;
+
+    if (!sw.started) {
+      if (state.lives === cfg.triggerLives &&
+          progress >= cfg.minProgress && progress <= cfg.maxProgress) {
+        sw.started = true;
+        sw.timer = cfg.delay;
+      }
+      return;
+    }
+
+    // Условие выполнено — отсчитываем паузу перед появлением
+    sw.timer -= dt;
+    if (sw.timer > 0) return;
+
+    sw.used = true;
+    spawnSecondWind();
+  }
+
+  function spawnSecondWind() {
+    const cfg = CONFIG.secondWind;
+
+    // Позицию сдвигаем, если впереди стоит препятствие
+    state.bonuses.push({
+      x: freeBonusX(state.worldX + cfg.ahead),
+      height: cfg.height,
+      r: cfg.radius,
+      type: 'life',
+      name: CONTENT.bonuses.secondWind.name,
+      taken: false
+    });
+  }
+
   // Сбор бонуса касанием героя
   function checkBonusPickup() {
     const heroX = CONFIG.layout.heroX;
@@ -1097,6 +1148,18 @@
 
   function collectBonus(b) {
     b.taken = true;
+
+    // «Второе дыхание» — не бонус категории, а дополнительная жизнь
+    if (b.type === 'life') {
+      state.lives = Math.min(state.lives + 1, CONFIG.lives.max);
+      state.bonusPopups.push({
+        text: CONTENT.bonuses.secondWind.popup,
+        y: CONFIG.layout.groundY - state.jumpY - CONFIG.bonuses.popup.heroOffsetY,
+        life: CONFIG.bonuses.popup.duration
+      });
+      return;
+    }
+
     state.bonusTotal += 1;
     state.bonusByCategory[b.category] = (state.bonusByCategory[b.category] || 0) + 1;
 
@@ -1205,7 +1268,8 @@
     checkCollisions();
     if (state.screen !== 'run') return;
 
-    // Бонусы: сбор и уборка собранных
+    // Бонусы: «Второе дыхание», сбор и уборка собранных
+    updateSecondWind(dt);
     checkBonusPickup();
     state.bonuses = state.bonuses.filter(function (b) {
       return b.x - state.worldX > -120;

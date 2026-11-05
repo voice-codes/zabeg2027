@@ -42,6 +42,12 @@ const CONTENT = {
   bonuses: {
     popupPrefix: '+',   // знак перед названием во всплывающем тексте
 
+    // Доп. жизнь. name — подпись под сердечком, popup — текст при сборе
+    secondWind: {
+      name: 'Второе дыхание: +1 жизнь',
+      popup: '+1 жизнь'
+    },
+
     categories: [
       {
         id: 'knowledge',
