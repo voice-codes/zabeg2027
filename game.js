@@ -34,6 +34,15 @@
     obstacles: [],
     nextObstacleX: 0,
 
+    // Бонусы
+    bonuses: [],
+    bonusPlan: [],        // запланированные позиции на уровне
+    bonusPool: [],        // все бонусы уровня 1 одним списком
+    bonusSpawned: 0,
+    bonusTotal: 0,        // общий счётчик для HUD
+    bonusByCategory: {},  // счётчики по категориям, игроку не показываются
+    bonusPopups: [],      // всплывающие надписи «+Английский»
+
     running: false,
     rafId: 0,
     lastTime: 0
@@ -490,6 +499,158 @@
     drawText(label, x + d.width / 2, plateY + 16, 13, 'bold', F.text, C.cream);
   }
 
+  // ---------- Бонусы ----------
+
+  // Все бонусы уровня 1 одним списком: категория, иконка, название
+  function bonusList() {
+    const list = [];
+    const cats = CONTENT.bonuses.categories;
+    for (let i = 0; i < cats.length; i++) {
+      for (let j = 0; j < cats[i].level1.length; j++) {
+        list.push({
+          category: cats[i].id,
+          icon: cats[i].icon,
+          name: cats[i].level1[j]
+        });
+      }
+    }
+    return list;
+  }
+
+  // Раскладываем бонусы по дистанции: ровно count штук между первым и финишем
+  function planBonusPositions(count) {
+    const cfg = CONFIG.bonuses;
+    const span = CONFIG.level.distance - cfg.endMargin - cfg.firstAt;
+    const positions = [];
+    const weights = [];
+    let sum = 0;
+
+    for (let i = 0; i < count; i++) {
+      const w = randomBetween(1 - cfg.jitter, 1 + cfg.jitter);
+      weights.push(w);
+      sum += w;
+    }
+
+    let acc = 0;
+    for (let i = 0; i < count; i++) {
+      positions.push(cfg.firstAt + span * (acc / sum));
+      acc += weights[i];
+    }
+    return positions;
+  }
+
+  function drawBonuses() {
+    const groundY = CONFIG.layout.groundY;
+
+    for (let i = 0; i < state.bonuses.length; i++) {
+      const b = state.bonuses[i];
+      if (b.taken) continue;
+
+      const x = b.x - state.worldX;
+      if (x < -b.r || x > W + b.r) continue;
+      const y = groundY - b.height;
+
+      // Акцентно-жёлтый круг
+      ctx.fillStyle = C.accent;
+      ctx.beginPath();
+      ctx.arc(x, y, b.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Тёмно-синяя иконка категории, растёт вместе с кругом
+      drawBonusIcon(b.icon, x, y - b.r * 0.08, b.r * 0.56);
+
+      // Подпись под кругом
+      drawBonusLabel(b.name, x, y + b.r + 4);
+    }
+  }
+
+  // Простые иконки категорий, рисуются фигурами
+  function drawBonusIcon(icon, cx, cy, s) {
+    ctx.fillStyle = C.deep;
+
+    if (icon === 'bulb') {
+      // Лампочка: колба и цоколь
+      ctx.beginPath();
+      ctx.arc(cx, cy - s * 0.2, s * 0.55, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillRect(cx - s * 0.24, cy + s * 0.3, s * 0.48, s * 0.4);
+    } else if (icon === 'people') {
+      // Два человечка: головы и плечи
+      ctx.beginPath();
+      ctx.arc(cx - s * 0.34, cy - s * 0.42, s * 0.28, 0, Math.PI * 2);
+      ctx.arc(cx + s * 0.34, cy - s * 0.14, s * 0.28, 0, Math.PI * 2);
+      ctx.fill();
+      roundRect(cx - s * 0.74, cy - s * 0.06, s * 0.62, s * 0.5, s * 0.2);
+      ctx.fill();
+      roundRect(cx + s * 0.02, cy + s * 0.2, s * 0.62, s * 0.5, s * 0.2);
+      ctx.fill();
+    } else if (icon === 'bolt') {
+      // Молния
+      ctx.beginPath();
+      ctx.moveTo(cx + s * 0.22, cy - s * 0.78);
+      ctx.lineTo(cx - s * 0.48, cy + s * 0.08);
+      ctx.lineTo(cx - s * 0.02, cy + s * 0.08);
+      ctx.lineTo(cx - s * 0.22, cy + s * 0.78);
+      ctx.lineTo(cx + s * 0.48, cy - s * 0.1);
+      ctx.lineTo(cx + s * 0.02, cy - s * 0.1);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      // Бумажный самолётик
+      ctx.beginPath();
+      ctx.moveTo(cx + s * 0.8, cy - s * 0.62);
+      ctx.lineTo(cx - s * 0.8, cy + s * 0.02);
+      ctx.lineTo(cx + s * 0.1, cy + s * 0.34);
+      ctx.lineTo(cx + s * 0.3, cy + s * 0.8);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // Кремовая плашка с названием бонуса. Длинное название переносится
+  // на две строки, плашка не выходит за край поля.
+  function drawBonusLabel(name, cx, topY) {
+    const cfg = CONFIG.bonuses;
+    const fontSize = cfg.labelFontSize;
+    const lineHeight = fontSize + 3;
+
+    // Строки подписи
+    const lines = wrapLines(name, cfg.labelWidthMax - 12, fontSize, 'bold', F.text);
+
+    // Ширина плашки по самой длинной строке
+    ctx.font = 'bold ' + fontSize + 'px ' + F.text;
+    let w = 0;
+    for (let i = 0; i < lines.length; i++) {
+      w = Math.max(w, ctx.measureText(lines[i]).width);
+    }
+    w = Math.min(w + 12, cfg.labelWidthMax);
+    const h = lines.length * lineHeight + 6;
+
+    // Держим плашку внутри поля
+    const x = Math.max(2, Math.min(W - w - 2, cx - w / 2));
+
+    ctx.fillStyle = C.cream;
+    roundRect(x, topY, w, h, 6);
+    ctx.fill();
+
+    for (let i = 0; i < lines.length; i++) {
+      drawText(lines[i], x + w / 2, topY + 3 + fontSize + i * lineHeight,
+        fontSize, 'bold', F.text, C.deep);
+    }
+  }
+
+  // Всплывающий текст после сбора
+  function drawBonusPopups() {
+    const cfg = CONFIG.bonuses.popup;
+    for (let i = 0; i < state.bonusPopups.length; i++) {
+      const p = state.bonusPopups[i];
+      // В конце плавно растворяется
+      ctx.globalAlpha = Math.min(1, p.life / 0.35);
+      drawFitText(p.text, W / 2, p.y, cfg.fontSize, 'bold', F.title, C.deep, W - 24);
+      ctx.globalAlpha = 1;
+    }
+  }
+
   // ---------- Игра ----------
 
   function drawHud() {
@@ -514,6 +675,16 @@
       roundRect(barX, barY, Math.max(barW * progress, 8), barH, 4);
       ctx.fill();
     }
+
+    // Общий счётчик бонусов: под сердечками
+    ctx.fillStyle = C.accent;
+    ctx.beginPath();
+    ctx.arc(24, 66, 11, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = C.deep;
+    drawStar(24, 66, 6.5, 3);
+    drawText(String(state.bonusTotal), 46, 71, 15, 'bold', F.text, C.deep);
   }
 
   // Мигающая подсказка «Тап!» до первого прыжка
@@ -537,6 +708,7 @@
     drawGround(true);
     drawDoor();
     drawObstacles();
+    drawBonuses();
 
     // После столкновения герой мигает
     const blink = state.invuln > 0 && Math.floor(state.invuln * 10) % 2 === 0;
@@ -553,6 +725,7 @@
       );
     }
 
+    drawBonusPopups();
     drawHud();
     drawTapHint();
   }
@@ -611,6 +784,21 @@
     ctx.moveTo(cx, cy + s * 0.75);
     ctx.bezierCurveTo(cx - s * 1.4, cy - s * 0.1, cx - s * 0.55, cy - s, cx, cy - s * 0.35);
     ctx.bezierCurveTo(cx + s * 0.55, cy - s, cx + s * 1.4, cy - s * 0.1, cx, cy + s * 0.75);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Пятиконечная звезда: значок счётчика бонусов
+  function drawStar(cx, cy, outer, inner) {
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const r = i % 2 === 0 ? outer : inner;
+      const a = -Math.PI / 2 + i * Math.PI / 5;
+      const x = cx + Math.cos(a) * r;
+      const y = cy + Math.sin(a) * r;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
     ctx.closePath();
     ctx.fill();
   }
@@ -748,6 +936,21 @@
     state.obstacles = [];
     state.nextObstacleX = CONFIG.obstacles.firstAt;
     state.groundOffset = 0;
+
+    // Бонусы: обнуляем счётчики и планируем 12–15 штук на уровень
+    state.bonuses = [];
+    state.bonusPopups = [];
+    state.bonusTotal = 0;
+    state.bonusByCategory = {};
+    const cats = CONTENT.bonuses.categories;
+    for (let i = 0; i < cats.length; i++) {
+      state.bonusByCategory[cats[i].id] = 0;
+    }
+    state.bonusCount = Math.floor(randomBetween(CONFIG.bonuses.countMin, CONFIG.bonuses.countMax + 1));
+    state.bonusSpawned = 0;
+    state.bonusPool = bonusList();
+    state.bonusPlan = planBonusPositions(state.bonusCount);
+
     draw();
   }
 
@@ -808,6 +1011,113 @@
         randomBetween(CONFIG.obstacles.extraGapMin, CONFIG.obstacles.extraGapMax);
       state.nextObstacleX += size.width + gap;
     }
+  }
+
+  // Бонусы ставим только там, где препятствия уже созданы,
+  // поэтому все препятствия на этом месте видны и можно их обойти.
+  function freeBonusX(startX) {
+    const gap = CONFIG.bonuses.radius + CONFIG.bonuses.obstacleMargin;
+    let x = startX;
+
+    for (let n = 0; n < 12; n++) {
+      let shifted = false;
+      for (let i = 0; i < state.obstacles.length; i++) {
+        const o = state.obstacles[i];
+        if (x > o.x - gap && x < o.x + o.w + gap) {
+          x = o.x + o.w + gap;
+          shifted = true;
+        }
+      }
+      if (!shifted) return x;
+    }
+    return x;
+  }
+
+  function spawnBonuses() {
+    if (state.bonusSpawned >= state.bonusPlan.length) return;
+
+    const cfg = CONFIG.bonuses;
+    const frontier = state.worldX + W + 120;
+
+    while (state.bonusSpawned < state.bonusPlan.length) {
+      // Позицию из плана сдвигаем, если на ней стоит препятствие
+      const x = freeBonusX(state.bonusPlan[state.bonusSpawned]);
+      if (x > frontier) return;
+
+      const item = state.bonusPool[Math.floor(Math.random() * state.bonusPool.length)];
+      const inAir = Math.random() < cfg.airShare;
+
+      state.bonuses.push({
+        x: x,
+        height: inAir ? randomBetween(cfg.airHeightMin, cfg.airHeightMax) : cfg.groundHeight,
+        r: cfg.radius,
+        category: item.category,
+        icon: item.icon,
+        name: item.name,
+        taken: false
+      });
+
+      state.bonusSpawned += 1;
+    }
+  }
+
+  // Сбор бонуса касанием героя
+  function checkBonusPickup() {
+    const heroX = CONFIG.layout.heroX;
+    const feet = CONFIG.layout.groundY - state.jumpY;
+    const heroW = CONFIG.player.hitWidth;
+    const heroH = CONFIG.player.hitHeight;
+    const heroBox = {
+      x: heroX - heroW / 2,
+      y: feet - heroH,
+      w: heroW,
+      h: heroH
+    };
+
+    for (let i = 0; i < state.bonuses.length; i++) {
+      const b = state.bonuses[i];
+      if (b.taken) continue;
+
+      const bx = b.x - state.worldX;
+      if (bx < -80 || bx > W + 80) continue;
+      const by = CONFIG.layout.groundY - b.height;
+
+      // Ближайшая к центру круга точка прямоугольника героя
+      const nx = Math.max(heroBox.x, Math.min(bx, heroBox.x + heroBox.w));
+      const ny = Math.max(heroBox.y, Math.min(by, heroBox.y + heroBox.h));
+      const dx = bx - nx;
+      const dy = by - ny;
+
+      // Расстояние сравниваем с квадратом радиуса
+      if (dx * dx + dy * dy <= b.r * b.r) {
+        collectBonus(b);
+      }
+    }
+  }
+
+  function collectBonus(b) {
+    b.taken = true;
+    state.bonusTotal += 1;
+    state.bonusByCategory[b.category] = (state.bonusByCategory[b.category] || 0) + 1;
+
+    // Всплывающий текст над героем
+    state.bonusPopups.push({
+      text: CONTENT.bonuses.popupPrefix + b.name,
+      y: CONFIG.layout.groundY - state.jumpY - CONFIG.bonuses.popup.heroOffsetY,
+      life: CONFIG.bonuses.popup.duration
+    });
+  }
+
+  function updateBonusPopups(dt) {
+    const cfg = CONFIG.bonuses.popup;
+    for (let i = 0; i < state.bonusPopups.length; i++) {
+      const p = state.bonusPopups[i];
+      p.life -= dt;
+      p.y -= cfg.rise * dt / cfg.duration;
+    }
+    state.bonusPopups = state.bonusPopups.filter(function (p) {
+      return p.life > 0;
+    });
   }
 
   function hitObstacle(o) {
@@ -885,6 +1195,7 @@
     }
 
     spawnObstacles();
+    spawnBonuses();
 
     // Убираем далёкие препятствия
     state.obstacles = state.obstacles.filter(function (o) {
@@ -893,6 +1204,13 @@
 
     checkCollisions();
     if (state.screen !== 'run') return;
+
+    // Бонусы: сбор и уборка собранных
+    checkBonusPickup();
+    state.bonuses = state.bonuses.filter(function (b) {
+      return b.x - state.worldX > -120;
+    });
+    updateBonusPopups(dt);
 
     // Финиш
     if (state.worldX >= CONFIG.level.distance) {
