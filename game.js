@@ -46,6 +46,17 @@
     // «Второе дыхание»: доп. жизнь, появляется один раз за уровень
     secondWind: { used: false, started: false, timer: 0 },
 
+    // Мини-события
+    eventsDone: [],     // какие события уже прошли
+    event: null,        // активное событие: вопрос, варианты, таймер
+    eventBanner: null,  // крупная плашка с названием и описанием эффекта
+    eventReady: null,   // короткая пауза «Приготовьтесь» после плашки
+    eventSpeed: 1,      // доля скорости мира (1 — обычная)
+    eventZones: [],     // зоны вокруг событий, где нет препятствий
+
+    // Активный эффект от события: id и остаток времени
+    effect: null,
+
     running: false,
     rafId: 0,
     lastTime: 0
@@ -659,6 +670,233 @@
     }
   }
 
+  // ---------- Мини-события ----------
+
+  function eventCardRect(i) {
+    const p = CONFIG.events.panel;
+    return {
+      x: p.x + p.padding,
+      y: p.y + p.cardTop + i * (p.cardHeight + p.cardGap),
+      w: p.w - p.padding * 2,
+      h: p.cardHeight
+    };
+  }
+
+  // Панель: вопрос, две карточки и полоса таймера
+  function drawEventPanel() {
+    const ev = state.event;
+    if (!ev) return;
+
+    const cfg = CONFIG.events;
+    const p = cfg.panel;
+
+    // Затемняем бег, чтобы панель читалась
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = C.navy;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1;
+
+    // Кремовая панель
+    ctx.fillStyle = C.cream;
+    roundRect(p.x, p.y, p.w, p.h, p.radius);
+    ctx.fill();
+
+    // Вопрос
+    const questionLines = wrapLines(
+      ev.question, p.w - p.padding * 2, p.questionFontSize, 'bold', F.title);
+    for (let i = 0; i < questionLines.length; i++) {
+      drawText(questionLines[i], W / 2,
+        p.y + p.questionTop + i * p.questionLineHeight,
+        p.questionFontSize, 'bold', F.title, C.deep);
+    }
+
+    // Карточки с ответами
+    for (let i = 0; i < ev.options.length; i++) {
+      const r = eventCardRect(i);
+
+      ctx.fillStyle = C.navy;
+      roundRect(r.x, r.y, r.w, r.h, 14);
+      ctx.fill();
+
+      // Текст карточки по центру, длинный переносится на две строки
+      const lines = wrapLines(
+        ev.options[i].text, r.w - 24, p.cardFontSize, 'bold', F.text);
+      const firstY = r.y + r.h / 2 -
+        ((lines.length - 1) * p.cardLineHeight) / 2 + p.cardFontSize * 0.35;
+      for (let j = 0; j < lines.length; j++) {
+        drawText(lines[j], r.x + r.w / 2, firstY + j * p.cardLineHeight,
+          p.cardFontSize, 'bold', F.text, C.cream);
+      }
+    }
+
+    // Полоса таймера: заполнена, пока время идёт
+    const tx = p.x + p.padding;
+    const ty = p.y + p.timerTop;
+    const tw = p.w - p.padding * 2;
+
+    ctx.fillStyle = C.city;
+    roundRect(tx, ty, tw, p.timerHeight, p.timerHeight / 2);
+    ctx.fill();
+
+    const left = Math.max(0, ev.timer) / cfg.timer;
+    if (left > 0) {
+      ctx.fillStyle = C.deep;
+      roundRect(tx, ty, Math.max(tw * left, p.timerHeight), p.timerHeight,
+        p.timerHeight / 2);
+      ctx.fill();
+    }
+  }
+
+  // Большая плашка поверх игры: иконка, название и описание эффекта.
+  // Пока она видна, мир стоит на паузе (см. updateRun).
+  function drawEventBanner() {
+    if (!state.eventBanner) return;
+
+    const cfg = CONFIG.events.banner;
+    const b = state.eventBanner;
+    const maxW = Math.min(cfg.maxWidth, W - 32);
+    const innerW = maxW - cfg.paddingX * 2;
+
+    const titleLines = wrapLines(b.title, innerW, cfg.titleFontSize, 'bold', F.title);
+    const textLines = wrapLines(b.text, innerW, cfg.textFontSize, 'normal', F.text);
+
+    // Ширина плашки по самой длинной строке
+    let textW = 0;
+    ctx.font = 'bold ' + cfg.titleFontSize + 'px ' + F.title;
+    for (let i = 0; i < titleLines.length; i++) {
+      textW = Math.max(textW, ctx.measureText(titleLines[i]).width);
+    }
+    ctx.font = 'normal ' + cfg.textFontSize + 'px ' + F.text;
+    for (let i = 0; i < textLines.length; i++) {
+      textW = Math.max(textW, ctx.measureText(textLines[i]).width);
+    }
+
+    const w = Math.min(maxW, textW + cfg.paddingX * 2);
+    const h = cfg.paddingY * 2 + cfg.iconRadius * 2 + cfg.iconGap +
+      titleLines.length * cfg.titleLineHeight + cfg.titleGap +
+      textLines.length * cfg.textLineHeight;
+    const x = (W - w) / 2;
+    const y = cfg.centerY - h / 2;
+
+    // Затемняем игру, чтобы плашку ничто не отвлекало
+    ctx.globalAlpha = 0.55;
+    ctx.fillStyle = C.navy;
+    ctx.fillRect(0, 0, W, H);
+
+    // В конце плашка плавно растворяется
+    ctx.globalAlpha = Math.min(1, b.life / 0.3);
+    ctx.fillStyle = C.accent;
+    roundRect(x, y, w, h, 18);
+    ctx.fill();
+
+    // Крупная иконка эффекта в кремовом круге
+    const iconCx = W / 2;
+    const iconCy = y + cfg.paddingY + cfg.iconRadius;
+    ctx.fillStyle = C.cream;
+    ctx.beginPath();
+    ctx.arc(iconCx, iconCy, cfg.iconRadius, 0, Math.PI * 2);
+    ctx.fill();
+    drawEffectIcon(b.id, iconCx, iconCy, cfg.iconRadius * 0.62);
+
+    // Название эффекта крупно
+    const titleTop = iconCy + cfg.iconRadius + cfg.iconGap;
+    let lineY = titleTop + cfg.titleFontSize;
+    for (let i = 0; i < titleLines.length; i++) {
+      drawText(titleLines[i], W / 2, lineY, cfg.titleFontSize, 'bold', F.title, C.deep);
+      lineY += cfg.titleLineHeight;
+    }
+
+    // Описание: что даёт эффект
+    lineY = titleTop + titleLines.length * cfg.titleLineHeight +
+      cfg.titleGap + cfg.textFontSize;
+    for (let i = 0; i < textLines.length; i++) {
+      drawText(textLines[i], W / 2, lineY, cfg.textFontSize, 'normal', F.text, C.deep);
+      lineY += cfg.textLineHeight;
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Короткая пауза после плашки: крупная надпись, чтобы собраться
+  function drawReadyHint() {
+    if (!state.eventReady) return;
+
+    const cfg = CONFIG.events.ready;
+    const text = CONTENT.events.readyText;
+
+    ctx.font = 'bold ' + cfg.fontSize + 'px ' + F.title;
+    const w = Math.min(W - 40, ctx.measureText(text).width + cfg.paddingX * 2);
+    const h = cfg.fontSize + cfg.paddingY * 2;
+    const x = (W - w) / 2;
+    const y = cfg.centerY - h / 2;
+
+    ctx.globalAlpha = Math.min(1, state.eventReady.life / 0.3);
+    ctx.fillStyle = C.cream;
+    roundRect(x, y, w, h, 14);
+    ctx.fill();
+
+    drawFitText(text, W / 2, y + cfg.paddingY + cfg.fontSize,
+      cfg.fontSize, 'bold', F.title, C.deep, w - cfg.paddingX * 2);
+    ctx.globalAlpha = 1;
+  }
+
+  // Иконка эффекта с таймером в HUD, рядом со счётчиком бонусов
+  function drawEffectHud() {
+    if (!state.effect) return;
+
+    const cfg = CONFIG.effects.hud;
+
+    // Кремовая плашка, чтобы синяя иконка читалась на фоне
+    ctx.fillStyle = C.cream;
+    roundRect(cfg.x, cfg.y, cfg.w, cfg.h, 8);
+    ctx.fill();
+
+    drawEffectIcon(state.effect.id, cfg.x + cfg.iconOffsetX, cfg.y + cfg.h / 2, 8);
+
+    const seconds = Math.ceil(state.effect.time);
+    drawText(String(seconds) + CONTENT.effects.secondsSuffix,
+      cfg.x + cfg.timerOffsetX, cfg.y + cfg.h / 2 + 4,
+      cfg.fontSize, 'bold', F.text, C.deep);
+  }
+
+  // Простые плоские иконки эффектов, рисуются фигурами
+  function drawEffectIcon(id, cx, cy, s) {
+    ctx.fillStyle = C.navy;
+
+    if (id === 'shield') {
+      // Щит
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - s);
+      ctx.lineTo(cx + s * 0.85, cy - s * 0.55);
+      ctx.lineTo(cx + s * 0.7, cy + s * 0.35);
+      ctx.lineTo(cx, cy + s);
+      ctx.lineTo(cx - s * 0.7, cy + s * 0.35);
+      ctx.lineTo(cx - s * 0.85, cy - s * 0.55);
+      ctx.closePath();
+      ctx.fill();
+    } else if (id === 'magnet') {
+      // Магнит: верхняя дуга и две ножки
+      ctx.strokeStyle = C.navy;
+      ctx.lineWidth = s * 0.6;
+      ctx.beginPath();
+      ctx.arc(cx, cy + s * 0.1, s * 0.6, Math.PI, 0);
+      ctx.stroke();
+      ctx.fillRect(cx - s * 0.9, cy + s * 0.1, s * 0.6, s * 0.65);
+      ctx.fillRect(cx + s * 0.3, cy + s * 0.1, s * 0.6, s * 0.65);
+    } else if (id === 'double') {
+      // Двойные очки: «×2»
+      drawText('×2', cx, cy + s * 0.55, s * 1.5, 'bold', F.text, C.navy);
+    } else {
+      // Рывок: стрелка вправо
+      ctx.fillRect(cx - s, cy - s * 0.2, s * 1.1, s * 0.4);
+      ctx.beginPath();
+      ctx.moveTo(cx + s * 0.1, cy - s * 0.7);
+      ctx.lineTo(cx + s, cy);
+      ctx.lineTo(cx + s * 0.1, cy + s * 0.7);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
   // ---------- Игра ----------
 
   function drawHud() {
@@ -735,7 +973,11 @@
 
     drawBonusPopups();
     drawHud();
+    drawEffectHud();
     drawTapHint();
+    drawEventBanner();
+    drawReadyHint();
+    drawEventPanel();
   }
 
   // ---------- Экраны победы и поражения ----------
@@ -896,8 +1138,14 @@
   }
 
   function handleTap(x, y) {
-    // Во время бега любой тап — прыжок
+    // Во время бега тап — прыжок, но во время события он только выбирает ответ
     if (state.screen === 'run') {
+      if (state.event) {
+        chooseEventByTap(x, y);
+        return;
+      }
+      // На паузе с плашкой эффекта тап ничего не делает
+      if (state.eventBanner || state.eventReady) return;
       jump();
       return;
     }
@@ -928,6 +1176,96 @@
     state.jumpVY = JUMP_VELOCITY;
     state.onGround = false;
     state.jumped = true;
+  }
+
+  // ---------- Логика мини-событий ----------
+
+  // Тап по карточке выбирает ответ
+  function chooseEventByTap(x, y) {
+    for (let i = 0; i < state.event.options.length; i++) {
+      if (isInside(eventCardRect(i), x, y)) {
+        chooseEventOption(i);
+        return;
+      }
+    }
+  }
+
+  // Событие начинается, когда пройдена нужная доля дистанции
+  function startEvent(index) {
+    const item = CONTENT.events.level1[index];
+    if (!item) return;
+
+    state.event = {
+      index: index,
+      question: item.question,
+      options: item.options,
+      timer: CONFIG.events.timer
+    };
+  }
+
+  // Выбор ответа: +2 в категорию, эффект на 8 с и плашка с его описанием
+  function chooseEventOption(index) {
+    const ev = state.event;
+    if (!ev) return;
+
+    const option = ev.options[index];
+    if (!option) return;
+
+    state.bonusByCategory[option.category] =
+      (state.bonusByCategory[option.category] || 0) + CONFIG.events.points;
+
+    // Запускаем эффект. Пока висит плашка, мир стоит,
+    // поэтому 8 секунд эффекта начинаются после паузы.
+    const effect = CONTENT.effects[option.effect];
+    if (effect) {
+      state.effect = { id: option.effect, time: CONFIG.effects.duration };
+      state.eventBanner = {
+        id: option.effect,
+        title: effect.name,
+        text: effect.description,
+        life: CONFIG.events.bannerTime
+      };
+    }
+
+    state.eventsDone[ev.index] = true;
+    state.event = null;
+  }
+
+  // Пауза на чтение: мир стоит, тикают только плашка и надпись «Приготовьтесь»
+  function updatePause(dt) {
+    if (state.eventBanner) {
+      state.eventBanner.life -= dt;
+      if (state.eventBanner.life <= 0) {
+        state.eventBanner = null;
+        state.eventReady = { life: CONFIG.events.readyTime };
+      }
+      return;
+    }
+
+    if (state.eventReady) {
+      state.eventReady.life -= dt;
+      if (state.eventReady.life <= 0) state.eventReady = null;
+    }
+  }
+
+  function updateEvents(dt) {
+    // Идёт событие: тикает таймер, по нулю выбирается случайный ответ
+    if (state.event) {
+      state.event.timer -= dt;
+      if (state.event.timer <= 0) {
+        chooseEventOption(Math.floor(Math.random() * state.event.options.length));
+      }
+      return;
+    }
+
+    // Пора начинать следующее событие
+    const progress = state.worldX / CONFIG.level.distance;
+    for (let i = 0; i < CONFIG.events.at.length; i++) {
+      if (!state.eventsDone[i] && progress >= CONFIG.events.at[i]) {
+        startEvent(i);
+        break;
+      }
+    }
   }
 
   function startLevel() {
@@ -962,6 +1300,18 @@
     // «Второе дыхание» на новом уровне ещё не появлялось
     state.secondWind = { used: false, started: false, timer: 0 };
 
+    // Мини-события: сбрасываем состояние и считаем зоны без препятствий
+    state.eventsDone = [];
+    for (let i = 0; i < CONFIG.events.at.length; i++) {
+      state.eventsDone.push(false);
+    }
+    state.event = null;
+    state.eventBanner = null;
+    state.eventReady = null;
+    state.eventSpeed = 1;
+    state.eventZones = buildEventZones();
+    state.effect = null;
+
     draw();
   }
 
@@ -978,7 +1328,8 @@
 
     if (state.screen === 'run') {
       e.preventDefault();
-      jump();
+      // Во время события пробел не прыгает
+      if (!state.event && !state.eventBanner && !state.eventReady) jump();
     } else if (state.screen === 'menu' || state.screen === 'win' || state.screen === 'lose') {
       e.preventDefault();
       startLevel();
@@ -988,9 +1339,60 @@
   // ---------- Игровой цикл ----------
 
   // Скорость растёт плавно по дистанции
+  function speedAtProgress(p) {
+    return CONFIG.motion.runSpeed +
+      (CONFIG.level.speedEnd - CONFIG.motion.runSpeed) *
+      Math.min(Math.max(p, 0), 1);
+  }
+
   function getSpeed() {
-    const p = Math.min(state.worldX / CONFIG.level.distance, 1);
-    return CONFIG.motion.runSpeed + (CONFIG.level.speedEnd - CONFIG.motion.runSpeed) * p;
+    return speedAtProgress(state.worldX / CONFIG.level.distance);
+  }
+
+  // Мир плавно замедляется до slowFactor, пока идёт событие,
+  // и так же плавно возвращается к обычной скорости.
+  function updateEventSpeed(dt) {
+    const cfg = CONFIG.events;
+    const target = state.event ? cfg.slowFactor : 1;
+    const span = 1 - cfg.slowFactor;
+
+    if (state.eventSpeed > target) {
+      const step = span / cfg.slowTime * dt;
+      state.eventSpeed = Math.max(target, state.eventSpeed - step);
+    } else if (state.eventSpeed < target) {
+      const step = span / cfg.restoreTime * dt;
+      state.eventSpeed = Math.min(target, state.eventSpeed + step);
+    }
+  }
+
+  // Зоны вокруг событий, где препятствия не создаются
+  function buildEventZones() {
+    const cfg = CONFIG.events;
+    const zones = [];
+
+    for (let i = 0; i < cfg.at.length; i++) {
+      const x = CONFIG.level.distance * cfg.at[i];
+      const v = speedAtProgress(cfg.at[i]);
+
+      // До события — столько секунд пути, сколько задано в конфиге
+      const before = v * cfg.noSpawnBefore;
+      // После — время самой панели на замедленной скорости,
+      // плавные торможение и разгон и ещё пара секунд обычного бега
+      const after = v * (cfg.slowFactor * cfg.timer +
+        cfg.slowTime + cfg.restoreTime + cfg.noSpawnAfter);
+
+      zones.push({ from: x - before, to: x + after });
+    }
+    return zones;
+  }
+
+  // Если препятствие попадает в зону события, вернуть конец этой зоны
+  function blockedZoneEnd(x, w) {
+    for (let i = 0; i < state.eventZones.length; i++) {
+      const z = state.eventZones[i];
+      if (x + w > z.from && x < z.to) return z.to;
+    }
+    return 0;
   }
 
   function randomBetween(min, max) {
@@ -1004,6 +1406,14 @@
       const list = CONTENT.obstacles.level1;
       const item = list[Math.floor(Math.random() * list.length)];
       const size = CONFIG.obstacles.types[item.type];
+
+      // Рядом с мини-событием препятствий не ставим
+      const zoneEnd = blockedZoneEnd(state.nextObstacleX, size.width);
+      if (zoneEnd > 0) {
+        state.nextObstacleX = zoneEnd +
+          randomBetween(CONFIG.obstacles.extraGapMin, CONFIG.obstacles.extraGapMax);
+        continue;
+      }
 
       state.obstacles.push({
         x: state.nextObstacleX,
@@ -1112,6 +1522,35 @@
     });
   }
 
+  // Магнит: бонусы в радиусе притягиваются к герою
+  function updateMagnet(dt) {
+    const eff = state.effect;
+    if (!eff || eff.id !== 'magnet') return;
+
+    const cfg = CONFIG.effects.magnet;
+    const heroX = CONFIG.layout.heroX;
+    // Центр героя по вертикали
+    const heroY = CONFIG.layout.groundY - state.jumpY - CONFIG.player.hitHeight / 2;
+
+    for (let i = 0; i < state.bonuses.length; i++) {
+      const b = state.bonuses[i];
+      if (b.taken) continue;
+
+      const bx = b.x - state.worldX;
+      if (bx < -cfg.radius || bx > W + cfg.radius) continue;
+      const by = CONFIG.layout.groundY - b.height;
+
+      const dx = heroX - bx;
+      const dy = heroY - by;
+      if (Math.sqrt(dx * dx + dy * dy) > cfg.radius) continue;
+
+      // Приближаем бонус к герою; скорость зависит от кадра
+      const k = Math.min(1, cfg.pull * dt);
+      b.x += dx * k;
+      b.height -= dy * k;
+    }
+  }
+
   // Сбор бонуса касанием героя
   function checkBonusPickup() {
     const heroX = CONFIG.layout.heroX;
@@ -1161,7 +1600,13 @@
     }
 
     state.bonusTotal += 1;
-    state.bonusByCategory[b.category] = (state.bonusByCategory[b.category] || 0) + 1;
+
+    // Двойные очки: в категорию идёт больше очков,
+    // общий счётчик собранных бонусов растёт как обычно
+    const mult = state.effect && state.effect.id === 'double'
+      ? CONFIG.effects.double.multiplier : 1;
+    state.bonusByCategory[b.category] =
+      (state.bonusByCategory[b.category] || 0) + mult;
 
     // Всплывающий текст над героем
     state.bonusPopups.push({
@@ -1185,6 +1630,13 @@
 
   function hitObstacle(o) {
     o.dead = true;
+
+    // Щит гасит одно столкновение и исчезает
+    if (state.effect && state.effect.id === 'shield') {
+      state.effect = null;
+      return;
+    }
+
     state.lives -= 1;
     state.invuln = CONFIG.lives.invulnerableTime;
     if (state.lives <= 0) {
@@ -1234,9 +1686,17 @@
   }
 
   function updateRun(dt) {
+    // После выбора игра замирает: сначала читаем плашку, потом «Приготовьтесь»
+    if (state.eventBanner || state.eventReady) {
+      updatePause(dt);
+      return;
+    }
+
     state.time += dt;
 
-    const speed = getSpeed();
+    // Во время события мир движется медленнее
+    updateEventSpeed(dt);
+    const speed = getSpeed() * state.eventSpeed;
     state.worldX += speed * dt;
     state.cloudOffset += speed * 0.12 * dt;
     state.cityOffset += speed * 0.32 * dt;
@@ -1245,6 +1705,12 @@
 
     // Неуязвимость после столкновения
     if (state.invuln > 0) state.invuln = Math.max(0, state.invuln - dt);
+
+    // Эффект от события: тикает и гаснет по времени
+    if (state.effect) {
+      state.effect.time -= dt;
+      if (state.effect.time <= 0) state.effect = null;
+    }
 
     // Прыжок по времени, а не по кадрам
     if (!state.onGround) {
@@ -1259,6 +1725,10 @@
 
     spawnObstacles();
     spawnBonuses();
+    updateMagnet(dt);
+
+    // Мини-события: таймер, выбор по времени, появление новых
+    updateEvents(dt);
 
     // Убираем далёкие препятствия
     state.obstacles = state.obstacles.filter(function (o) {
