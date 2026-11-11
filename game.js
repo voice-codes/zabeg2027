@@ -13,9 +13,12 @@
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
 
-  // Состояние игры. Экраны: меню, бег, победа, поражение.
+  // Состояние игры. Экраны: меню, бег, переход, поражение,
+  // победа на уровне 2 (win2) и финал с предсказанием.
   const state = {
     screen: 'menu',
+    level: 1,         // текущий уровень: 1 «Найти работу» или 2 «Построить карьеру»
+    prediction: null, // id категории для предсказания на финале
     hero: 0,          // выбранный герой (индекс в CONTENT.heroes)
     phase: 0,         // фаза анимации бега
     cloudOffset: 0,   // сдвиг облаков
@@ -23,7 +26,7 @@
     groundOffset: 0,  // сдвиг разметки на земле
     time: 0,          // время уровня в секундах
 
-    // Уровень 1
+    // Уровень
     worldX: 0,        // пройденная дистанция
     lives: CONFIG.lives.start,
     invuln: 0,        // остаток неуязвимости после столкновения
@@ -41,7 +44,10 @@
     bonusSpawned: 0,
     bonusTotal: 0,        // общий счётчик для HUD
     bonusByCategory: {},  // счётчики по категориям, игроку не показываются
+    levelStart: null,     // счётчики на момент старта уровня (для перезапуска)
     bonusPopups: [],      // всплывающие надписи «+Английский»
+    bonusStep: 0,         // средний шаг между бонусами в плане, px
+    dashBonusX: null,     // позиция следующего доп. бонуса «Рывка»
 
     // «Второе дыхание»: доп. жизнь, появляется один раз за уровень
     secondWind: { used: false, started: false, timer: 0 },
@@ -65,6 +71,19 @@
   // Физика прыжка считается из высоты и времени в воздухе
   const JUMP_VELOCITY = 4 * CONFIG.jump.height / CONFIG.jump.airTime;
   const JUMP_GRAVITY = 8 * CONFIG.jump.height / (CONFIG.jump.airTime * CONFIG.jump.airTime);
+
+  // Настройки текущего уровня: дистанция и скорость
+  function levelCfg() {
+    return CONFIG.levels[state.level];
+  }
+
+  // Цвета фона текущего уровня
+  function levelPalette(level) {
+    if (level === 2) {
+      return { bg: C.level2Sky, cloud: C.level2Cloud, city: C.level2City };
+    }
+    return { bg: C.sky, cloud: C.cloud, city: C.city };
+  }
 
   // ---------- Фон: облака и дома ----------
 
@@ -91,9 +110,9 @@
     }
   })();
 
-  function drawCloud(x, y, w) {
+  function drawCloud(x, y, w, color) {
     const h = w * 0.42;
-    ctx.fillStyle = C.cloud;
+    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(x, y, h * 0.6, 0, Math.PI * 2);
     ctx.arc(x + w * 0.25, y - h * 0.25, h * 0.75, 0, Math.PI * 2);
@@ -102,22 +121,22 @@
     ctx.fill();
   }
 
-  function drawClouds(offset) {
+  function drawClouds(offset, color) {
     const base = ((offset % CLOUD_TILE) + CLOUD_TILE) % CLOUD_TILE;
     for (let k = -1; k <= 1; k++) {
       for (let i = 0; i < clouds.length; i++) {
         const cl = clouds[i];
         const x = cl.x - base + k * CLOUD_TILE;
         if (x < -120 || x > W + 120) continue;
-        drawCloud(x, cl.y, cl.w);
+        drawCloud(x, cl.y, cl.w, color);
       }
     }
   }
 
-  function drawCity(offset) {
+  function drawCity(offset, color) {
     const groundY = CONFIG.layout.groundY;
     const base = ((offset % CITY_TILE) + CITY_TILE) % CITY_TILE;
-    ctx.fillStyle = C.city;
+    ctx.fillStyle = color;
     for (let k = -1; k <= 1; k++) {
       for (let i = 0; i < buildings.length; i++) {
         const b = buildings[i];
@@ -130,17 +149,18 @@
           ctx.fillStyle = C.cream;
           ctx.fillRect(x + b.w * 0.28, groundY - b.h + 10, 4, 6);
           ctx.fillRect(x + b.w * 0.58, groundY - b.h + 10, 4, 6);
-          ctx.fillStyle = C.city;
+          ctx.fillStyle = color;
         }
       }
     }
   }
 
   function drawBackground() {
-    ctx.fillStyle = C.sky;
+    const p = levelPalette(state.level);
+    ctx.fillStyle = p.bg;
     ctx.fillRect(0, 0, W, H);
-    drawClouds(state.cloudOffset);
-    drawCity(state.cityOffset);
+    drawClouds(state.cloudOffset, p.cloud);
+    drawCity(state.cityOffset, p.city);
   }
 
   function drawGround(showMarks) {
@@ -294,7 +314,7 @@
   function drawMenuBackground() {
     ctx.fillStyle = C.sky;
     ctx.fillRect(0, 0, W, H);
-    drawClouds(state.cloudOffset);
+    drawClouds(state.cloudOffset, C.cloud);
     drawGround(false);
   }
 
@@ -478,13 +498,108 @@
       ctx.fillStyle = C.cream;
       ctx.fillRect(x + 7, y + 8, w - 14, 3);
       ctx.fillRect(x + 7, y + 16, w - 22, 3);
+    } else if (type === 'call') {
+      // Созвон на 2 часа: огромные часы
+      const cx = x + w / 2;
+      const cy = y + h / 2;
+
+      // Корпус часов
+      ctx.fillStyle = C.navy;
+      ctx.beginPath();
+      ctx.arc(cx, cy, Math.min(w, h) / 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Кремовый циферблат
+      ctx.fillStyle = C.cream;
+      ctx.beginPath();
+      ctx.arc(cx, cy, Math.min(w, h) * 0.36, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Стрелки: часовая и минутная
+      ctx.strokeStyle = C.navy;
+      ctx.lineWidth = 4;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx, cy - Math.min(w, h) * 0.22);
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.min(w, h) * 0.2, cy + 4);
+      ctx.stroke();
+
+      // Кнопка сверху
+      ctx.fillStyle = C.navy;
+      ctx.fillRect(cx - 6, y - 4, 12, 8);
+    } else if (type === 'burnout') {
+      // Усталость и выгорание: догорающая свеча
+      ctx.fillStyle = C.navy;
+      roundRect(x + w * 0.2, y + h * 0.34, w * 0.6, h * 0.66, 6);
+      ctx.fill();
+
+      // Кремовый воск, стекающий по свече
+      ctx.fillStyle = C.cream;
+      ctx.fillRect(x + w * 0.28, y + h * 0.42, w * 0.16, h * 0.16);
+      ctx.fillRect(x + w * 0.56, y + h * 0.5, w * 0.14, h * 0.24);
+
+      // Пламя — тёмно-силуэтное, как у остальных препятствий,
+      // иначе кремовое пламя теряется на бежевом фоне
+      ctx.fillStyle = C.navy;
+      ctx.beginPath();
+      ctx.moveTo(x + w * 0.5, y + h * 0.02);
+      ctx.lineTo(x + w * 0.68, y + h * 0.3);
+      ctx.lineTo(x + w * 0.5, y + h * 0.34);
+      ctx.lineTo(x + w * 0.32, y + h * 0.3);
+      ctx.closePath();
+      ctx.fill();
+    } else if (type === 'deadline') {
+      // Дедлайн еще вчера: календарь с «!»
+      ctx.fillStyle = C.navy;
+      roundRect(x, y + 8, w, h - 8, 6);
+      ctx.fill();
+
+      // Кремовая шапка календаря и кольца
+      ctx.fillStyle = C.cream;
+      ctx.fillRect(x, y + 8, w, 12);
+      ctx.fillRect(x + 10, y, 5, 14);
+      ctx.fillRect(x + w - 15, y, 5, 14);
+
+      // Восклицательный знак
+      drawText('!', x + w / 2, y + h - 10, 26, 'bold', F.text, C.cream);
+    } else if (type === 'reorg') {
+      // Реорганизация: стопка коробок со стрелками
+      ctx.fillStyle = C.navy;
+
+      // Нижняя коробка
+      roundRect(x, y + h * 0.55, w * 0.62, h * 0.45, 3);
+      ctx.fill();
+
+      // Верхняя коробка
+      roundRect(x + w * 0.34, y + h * 0.18, w * 0.62, h * 0.42, 3);
+      ctx.fill();
+
+      // Кремовые стрелки на коробках
+      ctx.fillStyle = C.cream;
+      ctx.fillRect(x + w * 0.16, y + h * 0.72, w * 0.28, 4);
+      ctx.beginPath();
+      ctx.moveTo(x + w * 0.5, y + h * 0.64);
+      ctx.lineTo(x + w * 0.5, y + h * 0.88);
+      ctx.lineTo(x + w * 0.58, y + h * 0.76);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillRect(x + w * 0.5, y + h * 0.36, w * 0.28, 4);
+      ctx.beginPath();
+      ctx.moveTo(x + w * 0.84, y + h * 0.28);
+      ctx.lineTo(x + w * 0.84, y + h * 0.52);
+      ctx.lineTo(x + w * 0.92, y + h * 0.4);
+      ctx.closePath();
+      ctx.fill();
     }
   }
 
-  // Финишная дверь «Офис мечты»
+  // Финишная дверь: «Работа мечты» на уровне 1 и «Должность мечты» на уровне 2
   function drawDoor() {
     const d = CONFIG.door;
-    const doorWorldX = CONFIG.level.distance + CONFIG.layout.heroX - d.width / 2;
+    const doorWorldX = levelCfg().distance + CONFIG.layout.heroX - d.width / 2;
     const x = doorWorldX - state.worldX;
     if (x > W + 60) return;
 
@@ -501,7 +616,7 @@
     ctx.fill();
 
     // Табличка над дверью
-    const label = CONTENT.finishSign;
+    const label = CONTENT.finishSign['level' + state.level];
     ctx.font = 'bold 13px ' + F.text;
     const plateW = ctx.measureText(label).width + 20;
     const plateX = x + d.width / 2 - plateW / 2;
@@ -515,16 +630,17 @@
 
   // ---------- Бонусы ----------
 
-  // Все бонусы уровня 1 одним списком: категория, иконка, название
-  function bonusList() {
+  // Все бонусы уровня одним списком: категория, иконка, название
+  function bonusList(level) {
     const list = [];
     const cats = CONTENT.bonuses.categories;
+    const key = 'level' + level;
     for (let i = 0; i < cats.length; i++) {
-      for (let j = 0; j < cats[i].level1.length; j++) {
+      for (let j = 0; j < cats[i][key].length; j++) {
         list.push({
           category: cats[i].id,
           icon: cats[i].icon,
-          name: cats[i].level1[j]
+          name: cats[i][key][j]
         });
       }
     }
@@ -534,7 +650,7 @@
   // Раскладываем бонусы по дистанции: ровно count штук между первым и финишем
   function planBonusPositions(count) {
     const cfg = CONFIG.bonuses;
-    const span = CONFIG.level.distance - cfg.endMargin - cfg.firstAt;
+    const span = levelCfg().distance - cfg.endMargin - cfg.firstAt;
     const positions = [];
     const weights = [];
     let sum = 0;
@@ -915,7 +1031,7 @@
     roundRect(barX, barY, barW, barH, 4);
     ctx.fill();
 
-    const progress = Math.min(state.worldX / CONFIG.level.distance, 1);
+    const progress = Math.min(state.worldX / levelCfg().distance, 1);
     if (progress > 0) {
       ctx.fillStyle = C.deep;
       roundRect(barX, barY, Math.max(barW * progress, 8), barH, 4);
@@ -933,8 +1049,9 @@
     drawText(String(state.bonusTotal), 46, 71, 15, 'bold', F.text, C.deep);
   }
 
-  // Мигающая подсказка «Тап!» до первого прыжка
+  // Мигающая подсказка «Тап!» до первого прыжка. Только на уровне 1.
   function drawTapHint() {
+    if (state.level !== 1) return;
     if (state.jumped || state.time > CONFIG.hint.duration) return;
     if (Math.floor(state.time * 3) % 2 === 1) return;
 
@@ -983,19 +1100,76 @@
   // ---------- Экраны победы и поражения ----------
 
   function endButtonRect() {
-    return { x: (W - 240) / 2, y: 430, w: 240, h: 54 };
+    const e = CONFIG.layout.end;
+    return { x: (W - e.buttonWidth) / 2, y: e.buttonTop, w: e.buttonWidth, h: e.buttonHeight };
+  }
+
+  // Тексты экрана в зависимости от исхода и уровня
+  function endScreenContent() {
+    if (state.screen === 'win2') return CONTENT.screens.win2;
+    if (state.screen === 'transition') return CONTENT.screens.transition;
+    if (state.screen === 'final') {
+      const final = CONTENT.screens.final;
+      return {
+        title: final.title,
+        text: final.predictions[state.prediction] || '',
+        button: final.button
+      };
+    }
+    return state.level === 2 ? CONTENT.screens.lose2 : CONTENT.screens.lose1;
+  }
+
+  // Категория с наибольшим счётом за оба уровня.
+  // При равенстве выбираем случайную из лидирующих.
+  function pickPrediction() {
+    const cats = CONTENT.bonuses.categories;
+    let best = -1;
+    let leaders = [];
+
+    for (let i = 0; i < cats.length; i++) {
+      const score = state.bonusByCategory[cats[i].id] || 0;
+      if (score > best) {
+        best = score;
+        leaders = [cats[i].id];
+      } else if (score === best) {
+        leaders.push(cats[i].id);
+      }
+    }
+    return leaders[Math.floor(Math.random() * leaders.length)];
   }
 
   function drawEnd() {
-    ctx.fillStyle = C.sky;
+    // Переход, победа и финал показывают бежевый фон уровня 2
+    const paletteLevel = state.screen === 'lose' ? state.level : 2;
+    const p = levelPalette(paletteLevel);
+
+    ctx.fillStyle = p.bg;
     ctx.fillRect(0, 0, W, H);
-    drawClouds(state.cloudOffset);
+    drawClouds(state.cloudOffset, p.cloud);
     drawGround(false);
 
-    const screen = state.screen === 'win' ? CONTENT.screens.win : CONTENT.screens.lose;
+    const e = CONFIG.layout.end;
+    const screen = endScreenContent();
 
-    drawFitText(screen.title, W / 2, 220, 32, 'bold', F.title, C.deep, W - 32);
-    drawWrappedText(screen.text, W / 2, 262, 280, 24, 16, 'normal', F.text, C.deep);
+    // Заголовок — одна строка. Если не помещается по ширине,
+    // шрифт немного уменьшается.
+    drawFitText(
+      screen.title, W / 2, e.titleY, e.titleFontSize,
+      'bold', F.title, C.deep, e.titleMaxWidth
+    );
+
+    // Текст начинается от верха области и вписывается в её высоту.
+    const block = fitTextBlock(
+      screen.text, e.textWidth, e.textFontSize, e.textLineHeight,
+      'normal', F.text, e.textMaxHeight, e.minFontScale
+    );
+    const firstY = e.textTop + block.size; // базовая линия первой строки
+    for (let i = 0; i < block.lines.length; i++) {
+      drawText(
+        block.lines[i], W / 2, firstY + i * block.lineHeight,
+        block.size, 'normal', F.text, C.deep
+      );
+    }
 
     const btn = endButtonRect();
     ctx.fillStyle = C.navy;
@@ -1098,6 +1272,24 @@
     return result;
   }
 
+  // Вписывает текст в область: переносит по словам и, если строки
+  // не помещаются по высоте, уменьшает шрифт. Ниже minScale от
+  // заданного размера шрифт не уменьшается.
+  function fitTextBlock(text, maxWidth, size, lineHeight, weight, font, maxHeight, minScale) {
+    const minSize = Math.max(1, Math.ceil(size * minScale));
+    let s = size;
+    let lh = lineHeight;
+    let lines = wrapLines(text, maxWidth, s, weight, font);
+
+    while (s > minSize && lines.length * lh > maxHeight) {
+      s -= 1;
+      lh = Math.max(1, Math.round(lineHeight * s / size));
+      lines = wrapLines(text, maxWidth, s, weight, font);
+    }
+
+    return { size: s, lineHeight: lh, lines: lines, height: lines.length * lh };
+  }
+
   // Перенос длинного текста по словам. Возвращает число строк.
   function drawWrappedText(text, cx, y, maxWidth, lineHeight, size, weight, font, color) {
     const lines = wrapLines(text, maxWidth, size, weight, font);
@@ -1160,14 +1352,21 @@
       }
 
       if (isInside(startButtonRect(), x, y)) {
-        startLevel();
+        startLevel(1, null);
       }
       return;
     }
 
-    // Победа или поражение: кнопка перезапуска
-    if (isInside(endButtonRect(), x, y)) {
-      startLevel();
+    // Переход, победа, финал или поражение: кнопка внизу
+    if (!isInside(endButtonRect(), x, y)) return;
+    if (state.screen === 'transition') {
+      goNextLevel();
+    } else if (state.screen === 'win2') {
+      showPrediction();
+    } else if (state.screen === 'final') {
+      goToMenu();
+    } else {
+      restartLevel();
     }
   }
 
@@ -1192,7 +1391,8 @@
 
   // Событие начинается, когда пройдена нужная доля дистанции
   function startEvent(index) {
-    const item = CONTENT.events.level1[index];
+    const list = CONTENT.events['level' + state.level];
+    const item = list ? list[index] : null;
     if (!item) return;
 
     state.event = {
@@ -1259,7 +1459,7 @@
     }
 
     // Пора начинать следующее событие
-    const progress = state.worldX / CONFIG.level.distance;
+    const progress = state.worldX / levelCfg().distance;
     for (let i = 0; i < CONFIG.events.at.length; i++) {
       if (!state.eventsDone[i] && progress >= CONFIG.events.at[i]) {
         startEvent(i);
@@ -1268,7 +1468,8 @@
     }
   }
 
-  function startLevel() {
+  function startLevel(level, carry) {
+    state.level = level;
     state.screen = 'run';
     state.phase = 0;
     state.time = 0;
@@ -1283,19 +1484,33 @@
     state.nextObstacleX = CONFIG.obstacles.firstAt;
     state.groundOffset = 0;
 
-    // Бонусы: обнуляем счётчики и планируем 12–15 штук на уровень
+    // Счётчики бонусов. carry передают при переходе на уровень 2,
+    // чтобы счёт по категориям не обнулялся между уровнями.
     state.bonuses = [];
     state.bonusPopups = [];
-    state.bonusTotal = 0;
+    state.bonusTotal = carry ? carry.total : 0;
     state.bonusByCategory = {};
     const cats = CONTENT.bonuses.categories;
     for (let i = 0; i < cats.length; i++) {
-      state.bonusByCategory[cats[i].id] = 0;
+      state.bonusByCategory[cats[i].id] = carry
+        ? (carry.byCategory[cats[i].id] || 0)
+        : 0;
     }
+
+    // Запоминаем счётчики на старте уровня:
+    // по ним уровень перезапускается после поражения.
+    state.levelStart = {
+      total: state.bonusTotal,
+      byCategory: Object.assign({}, state.bonusByCategory)
+    };
+
     state.bonusCount = Math.floor(randomBetween(CONFIG.bonuses.countMin, CONFIG.bonuses.countMax + 1));
     state.bonusSpawned = 0;
-    state.bonusPool = bonusList();
+    state.bonusPool = bonusList(level);
     state.bonusPlan = planBonusPositions(state.bonusCount);
+    const bonusSpan = levelCfg().distance - CONFIG.bonuses.endMargin - CONFIG.bonuses.firstAt;
+    state.bonusStep = bonusSpan / state.bonusCount;
+    state.dashBonusX = null;
 
     // «Второе дыхание» на новом уровне ещё не появлялось
     state.secondWind = { used: false, started: false, timer: 0 };
@@ -1315,6 +1530,51 @@
     draw();
   }
 
+  // Снимок счётчиков для перехода на следующий уровень
+  function currentBonusCarry() {
+    return {
+      total: state.bonusTotal,
+      byCategory: Object.assign({}, state.bonusByCategory)
+    };
+  }
+
+  // Победа на уровне 1: переходим на уровень 2, счётчики сохраняем
+  function goNextLevel() {
+    startLevel(2, currentBonusCarry());
+  }
+
+  // Победа на уровне 2: открываем экран предсказания. Категория уже
+  // выбрана в момент победы, поэтому отрисовка её не меняет.
+  function showPrediction() {
+    state.screen = 'final';
+    draw();
+  }
+
+  // Финал: «Сыграть ещё раз» возвращает к выбору героя,
+  // счётчики бонусов обнуляются.
+  function goToMenu() {
+    state.screen = 'menu';
+    state.level = 1;
+    state.prediction = null;
+    state.levelStart = null;
+    state.bonusTotal = 0;
+    state.bonusByCategory = {};
+    const cats = CONTENT.bonuses.categories;
+    for (let i = 0; i < cats.length; i++) {
+      state.bonusByCategory[cats[i].id] = 0;
+    }
+    draw();
+  }
+
+  // Поражение: перезапускаем текущий уровень
+  function restartLevel() {
+    if (state.level === 2) {
+      startLevel(2, state.levelStart);
+    } else {
+      startLevel(1, null);
+    }
+  }
+
   canvas.addEventListener('pointerdown', function (e) {
     const rect = canvas.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width * W;
@@ -1330,23 +1590,46 @@
       e.preventDefault();
       // Во время события пробел не прыгает
       if (!state.event && !state.eventBanner && !state.eventReady) jump();
-    } else if (state.screen === 'menu' || state.screen === 'win' || state.screen === 'lose') {
+    } else if (state.screen === 'menu') {
       e.preventDefault();
-      startLevel();
+      startLevel(1, null);
+    } else if (state.screen === 'transition') {
+      e.preventDefault();
+      goNextLevel();
+    } else if (state.screen === 'win2') {
+      e.preventDefault();
+      showPrediction();
+    } else if (state.screen === 'final') {
+      e.preventDefault();
+      goToMenu();
+    } else if (state.screen === 'lose') {
+      e.preventDefault();
+      restartLevel();
     }
   });
 
   // ---------- Игровой цикл ----------
 
-  // Скорость растёт плавно по дистанции
+  // Скорость растёт плавно по дистанции текущего уровня
   function speedAtProgress(p) {
-    return CONFIG.motion.runSpeed +
-      (CONFIG.level.speedEnd - CONFIG.motion.runSpeed) *
+    const lc = levelCfg();
+    return lc.speedStart +
+      (lc.speedEnd - lc.speedStart) *
       Math.min(Math.max(p, 0), 1);
   }
 
   function getSpeed() {
-    return speedAtProgress(state.worldX / CONFIG.level.distance);
+    return speedAtProgress(state.worldX / levelCfg().distance);
+  }
+
+  // Активен ли «Рывок»
+  function isDashActive() {
+    return state.effect !== null && state.effect.id === 'dash';
+  }
+
+  // Множитель скорости мира от активного эффекта
+  function effectSpeedFactor() {
+    return isDashActive() ? CONFIG.effects.dash.speedFactor : 1;
   }
 
   // Мир плавно замедляется до slowFactor, пока идёт событие,
@@ -1371,7 +1654,7 @@
     const zones = [];
 
     for (let i = 0; i < cfg.at.length; i++) {
-      const x = CONFIG.level.distance * cfg.at[i];
+      const x = levelCfg().distance * cfg.at[i];
       const v = speedAtProgress(cfg.at[i]);
 
       // До события — столько секунд пути, сколько задано в конфиге
@@ -1400,10 +1683,10 @@
   }
 
   function spawnObstacles() {
-    const limit = CONFIG.level.distance - 300;
+    const limit = levelCfg().distance - 300;
 
     while (state.nextObstacleX < state.worldX + W + 200 && state.nextObstacleX < limit) {
-      const list = CONTENT.obstacles.level1;
+      const list = CONTENT.obstacles['level' + state.level];
       const item = list[Math.floor(Math.random() * list.length)];
       const size = CONFIG.obstacles.types[item.type];
 
@@ -1424,12 +1707,21 @@
         dead: false
       });
 
-      // Зазор не меньше скорость × 0,9 с плюс случайная добавка
-      const p = Math.min(state.nextObstacleX / CONFIG.level.distance, 1);
-      const speedHere = CONFIG.motion.runSpeed +
-        (CONFIG.level.speedEnd - CONFIG.motion.runSpeed) * p;
-      const gap = speedHere * CONFIG.obstacles.minGapTime +
+      // Обычный зазор: скорость × 0,9 с плюс случайная добавка.
+      // Считаем его от обычной скорости, без учёта «Рывка».
+      const p = Math.min(state.nextObstacleX / levelCfg().distance, 1);
+      const baseSpeed = speedAtProgress(p);
+      const normalGap = baseSpeed * CONFIG.obstacles.minGapTime +
         randomBetween(CONFIG.obstacles.extraGapMin, CONFIG.obstacles.extraGapMax);
+
+      // «Рывок»: препятствий в 1,2 раза больше. Но зазор не может быть
+      // меньше скорость × 0,9 с уже с учётом ускорения, иначе ряд
+      // препятствий станет непроходимым.
+      let gap = normalGap;
+      if (isDashActive()) {
+        const minGap = baseSpeed * effectSpeedFactor() * CONFIG.obstacles.minGapTime;
+        gap = Math.max(minGap, normalGap / CONFIG.effects.dash.obstacleFactor);
+      }
       state.nextObstacleX += size.width + gap;
     }
   }
@@ -1454,31 +1746,76 @@
     return x;
   }
 
-  function spawnBonuses() {
-    if (state.bonusSpawned >= state.bonusPlan.length) return;
+  // Дополнительный бонус «Рывка»: не на препятствии
+  // и не вплотную к другому бонусу
+  function extraBonusX(startX) {
+    const minGap = CONFIG.effects.dash.extraBonusGap;
+    let x = freeBonusX(startX);
 
+    for (let n = 0; n < 8; n++) {
+      let moved = false;
+      for (let i = 0; i < state.bonuses.length; i++) {
+        const b = state.bonuses[i];
+        if (b.taken) continue;
+        if (Math.abs(b.x - x) < minGap) {
+          x = b.x + minGap;
+          moved = true;
+        }
+      }
+      if (!moved) return x;
+      x = freeBonusX(x);
+    }
+    return x;
+  }
+
+  // Ставит один бонус: категория, иконка, подпись и высота над землёй
+  function addBonus(x) {
     const cfg = CONFIG.bonuses;
+    const item = state.bonusPool[Math.floor(Math.random() * state.bonusPool.length)];
+    const inAir = Math.random() < cfg.airShare;
+
+    state.bonuses.push({
+      x: x,
+      height: inAir ? randomBetween(cfg.airHeightMin, cfg.airHeightMax) : cfg.groundHeight,
+      r: cfg.radius,
+      category: item.category,
+      icon: item.icon,
+      name: item.name,
+      taken: false
+    });
+  }
+
+  function spawnBonuses() {
     const frontier = state.worldX + W + 120;
 
+    // Обычные бонусы из плана уровня
     while (state.bonusSpawned < state.bonusPlan.length) {
       // Позицию из плана сдвигаем, если на ней стоит препятствие
       const x = freeBonusX(state.bonusPlan[state.bonusSpawned]);
-      if (x > frontier) return;
+      if (x > frontier) break;
 
-      const item = state.bonusPool[Math.floor(Math.random() * state.bonusPool.length)];
-      const inAir = Math.random() < cfg.airShare;
-
-      state.bonuses.push({
-        x: x,
-        height: inAir ? randomBetween(cfg.airHeightMin, cfg.airHeightMax) : cfg.groundHeight,
-        r: cfg.radius,
-        category: item.category,
-        icon: item.icon,
-        name: item.name,
-        taken: false
-      });
-
+      addBonus(x);
       state.bonusSpawned += 1;
+    }
+
+    // «Рывок»: добавляем бонусы, чтобы их стало в 1,5 раза больше.
+    // При bonusFactor = 1,5 на каждые 2 обычных бонуса идёт 1 дополнительный.
+    if (!isDashActive()) {
+      state.dashBonusX = null;
+      return;
+    }
+    if (state.bonusStep <= 0) return;
+
+    const extraStep = state.bonusStep /
+      Math.max(CONFIG.effects.dash.bonusFactor - 1, 0.01);
+
+    // Сдвигаем первый дополнительный бонус на полшага, чтобы не добавлять
+    // лишний в самом начале «Рывка»: так за эффект их ровно в 1,5 раза больше.
+    if (state.dashBonusX === null) state.dashBonusX = frontier + extraStep / 2;
+
+    while (state.dashBonusX <= frontier) {
+      addBonus(extraBonusX(state.dashBonusX));
+      state.dashBonusX += extraStep;
     }
   }
 
@@ -1489,7 +1826,7 @@
     const sw = state.secondWind;
     if (sw.used) return;
 
-    const progress = state.worldX / CONFIG.level.distance;
+    const progress = state.worldX / levelCfg().distance;
 
     if (!sw.started) {
       if (state.lives === cfg.triggerLives &&
@@ -1696,12 +2033,13 @@
 
     // Во время события мир движется медленнее
     updateEventSpeed(dt);
-    const speed = getSpeed() * state.eventSpeed;
+    // «Рывок» ускоряет мир на 25%
+    const speed = getSpeed() * state.eventSpeed * effectSpeedFactor();
     state.worldX += speed * dt;
     state.cloudOffset += speed * 0.12 * dt;
     state.cityOffset += speed * 0.32 * dt;
     state.groundOffset += speed * dt;
-    state.phase += CONFIG.motion.runPhaseSpeed * (speed / CONFIG.motion.runSpeed) * dt;
+    state.phase += CONFIG.motion.runPhaseSpeed * (speed / levelCfg().speedStart) * dt;
 
     // Неуязвимость после столкновения
     if (state.invuln > 0) state.invuln = Math.max(0, state.invuln - dt);
@@ -1746,9 +2084,16 @@
     });
     updateBonusPopups(dt);
 
-    // Финиш
-    if (state.worldX >= CONFIG.level.distance) {
-      state.screen = 'win';
+    // Финиш: уровень 1 ведёт на экран перехода,
+    // уровень 2 — сначала на поздравление, потом на предсказание
+    if (state.worldX >= levelCfg().distance) {
+      if (state.level === 1) {
+        state.screen = 'transition';
+      } else {
+        // Категория выбирается один раз здесь, в момент победы
+        state.prediction = pickPrediction();
+        state.screen = 'win2';
+      }
     }
   }
 
@@ -1760,7 +2105,7 @@
     } else if (state.screen === 'run') {
       updateRun(dt);
     } else {
-      // На экранах победы и поражения двигаются только облака
+      // На экранах финала и поражения двигаются только облака
       state.cloudOffset += motion.menuCloudSpeed * dt;
     }
   }
