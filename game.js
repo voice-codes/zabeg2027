@@ -25,6 +25,7 @@
     cityOffset: 0,    // сдвиг домов
     groundOffset: 0,  // сдвиг разметки на земле
     time: 0,          // время уровня в секундах
+    decorTime: 0,     // время анимации декора на экранах итогов, с
 
     // Уровень
     worldX: 0,        // пройденная дистанция
@@ -1099,9 +1100,21 @@
 
   // ---------- Экраны победы и поражения ----------
 
+  // Строки на кнопке: перенос задаётся в content.js символом \n
+  function endButtonLines(text) {
+    const e = CONFIG.layout.end;
+    return wrapLines(text, e.buttonWidth - e.buttonPaddingX * 2, e.buttonFontSize, 'bold', F.text);
+  }
+
   function endButtonRect() {
     const e = CONFIG.layout.end;
-    return { x: (W - e.buttonWidth) / 2, y: e.buttonTop, w: e.buttonWidth, h: e.buttonHeight };
+    const lines = endButtonLines(endScreenContent().button);
+    // Кнопка становится выше по числу строк, шрифт остаётся крупным
+    const h = Math.max(
+      e.buttonHeight,
+      lines.length * e.buttonLineHeight + e.buttonPaddingY * 2
+    );
+    return { x: (W - e.buttonWidth) / 2, y: e.buttonTop, w: e.buttonWidth, h: h };
   }
 
   // Тексты экрана в зависимости от исхода и уровня
@@ -1138,18 +1151,694 @@
     return leaders[Math.floor(Math.random() * leaders.length)];
   }
 
-  function drawEnd() {
-    // Переход, победа и финал показывают бежевый фон уровня 2
-    const paletteLevel = state.screen === 'lose' ? state.level : 2;
-    const p = levelPalette(paletteLevel);
+  // ---------- Сцены экранов: переход, поражения, победа, предсказания ----------
 
-    ctx.fillStyle = p.bg;
+  // Сцена для каждого предсказания: ключ — id категории из content.js
+  const FINAL_SCENES = {
+    knowledge: 'finalKnowledge',
+    contacts: 'finalContacts',
+    energy: 'finalEnergy',
+    courage: 'finalCourage'
+  };
+
+  // Имя сцены для текущего экрана. null — сцены нет.
+  function endSceneName() {
+    if (state.screen === 'transition') return 'transition';
+    if (state.screen === 'win2') return 'win';
+    if (state.screen === 'lose') return state.level === 2 ? 'lose2' : 'lose1';
+    if (state.screen === 'final') return FINAL_SCENES[state.prediction] || null;
+    return null;
+  }
+
+  // Цвет из палитры по имени из config.js
+  function paletteColor(name) {
+    return CONFIG.colors[name] || name;
+  }
+
+  // У экранов предсказаний свой набор декора
+  function isFinalScene(name) {
+    return name.indexOf('final') === 0;
+  }
+
+  // Фон, полоса пола, декор, крупный предмет и герой.
+  // Всё плоское: только заливки, без градиентов, теней и обводок.
+  function drawEndScene(name) {
+    const sc = CONFIG.layout.end.scene;
+    const scene = CONFIG.scenes[name];
+    const final = isFinalScene(name);
+
+    // Ровный фон поля
+    ctx.fillStyle = paletteColor(scene.bg);
     ctx.fillRect(0, 0, W, H);
-    drawClouds(state.cloudOffset, p.cloud);
-    drawGround(false);
 
+    // Самый дальний слой — ёлка: она за полосой пола, героем и предметом
+    if (final) drawDecorTree(scene);
+
+    // Полоса пола под героем и предметом
+    ctx.fillStyle = paletteColor(scene.floor);
+    ctx.fillRect(0, sc.floorY, W, sc.floorHeight);
+
+    // Верхний край сцены: гирлянда и шары на ниточках
+    if (final) {
+      drawDecorGarland();
+      drawDecorBalls();
+    }
+
+    // Один крупный предмет справа
+    if (name === 'transition') {
+      drawFolderObject(sc.objectX, sc.floorY);
+    } else if (name === 'lose1') {
+      drawClosedDoorObject(sc.objectX, sc.floorY);
+    } else if (name === 'lose2') {
+      drawCandleObject(sc.objectX, sc.floorY);
+    } else if (name === 'win') {
+      drawArchObject(sc.objectX, sc.floorY);
+    } else if (name === 'finalKnowledge') {
+      drawBulbObject(sc.objectX, sc.floorY);
+    } else if (name === 'finalEnergy') {
+      drawBoltObject(sc.objectX, sc.floorY);
+    } else if (name === 'finalContacts') {
+      drawPeopleObject(sc.objectX, sc.floorY);
+    } else if (name === 'finalCourage') {
+      drawPlaneObject(sc.objectX, sc.floorY);
+    }
+
+    // Герой стоит слева в обычной позе (без анимации бега)
+    const hero = CONTENT.heroes[state.hero];
+    drawHero(sc.heroX, sc.floorY, sc.heroHeight, hero.id, 0, false, false);
+
+    // Передний слой — падающие конфетти и снег
+    if (final) drawDecorParticles();
+  }
+
+  // Папка с галочкой: оффер получен
+  function drawFolderObject(cx, baseY) {
+    const w = 150;
+    const h = 100;
+    const x = cx - w / 2;
+    const y = baseY - h;
+
+    // Бумаги, торчащие из папки справа
+    ctx.fillStyle = C.cream;
+    ctx.fillRect(x + 62, y - 26, w - 80, 38);
+
+    // Ярлычок папки слева
+    ctx.fillStyle = C.navy;
+    roundRect(x, y - 14, 62, 24, 6);
+    ctx.fill();
+
+    // Корпус папки
+    roundRect(x, y, w, h, 8);
+    ctx.fill();
+
+    // Кремовая полоска-сгиб сверху
+    ctx.fillStyle = C.cream;
+    ctx.fillRect(x + 10, y + 12, w - 20, 6);
+
+    // Акцентная галочка
+    const cy = y + h * 0.6;
+    ctx.strokeStyle = C.accent;
+    ctx.lineWidth = 18;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx - 34, cy - 4);
+    ctx.lineTo(cx - 10, cy + 20);
+    ctx.lineTo(cx + 32, cy - 26);
+    ctx.stroke();
+  }
+
+  // Закрытая дверь с замком: вакансия закрыта
+  function drawClosedDoorObject(cx, baseY) {
+    const w = 104;
+    const h = 148;
+    const x = cx - w / 2;
+    const y = baseY - h;
+
+    // Тёмно-синяя коробка двери
+    ctx.fillStyle = C.navy;
+    roundRect(x - 8, y - 10, w + 16, h + 10, 10);
+    ctx.fill();
+
+    // Кремовое полотно
+    ctx.fillStyle = C.cream;
+    roundRect(x + 10, y + 8, w - 20, h - 18, 6);
+    ctx.fill();
+
+    // Замок: синяя пластина и дужка
+    const lockY = y + h * 0.48;
+    ctx.fillStyle = C.navy;
+    roundRect(cx - 22, lockY, 44, 34, 6);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, lockY, 15, Math.PI, 0);
+    ctx.arc(cx, lockY, 7, 0, Math.PI, true);
+    ctx.closePath();
+    ctx.fill();
+
+    // Акцентная замочная скважина
+    ctx.fillStyle = C.accent;
+    ctx.beginPath();
+    ctx.arc(cx, lockY + 12, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(cx - 4, lockY + 14);
+    ctx.lineTo(cx + 4, lockY + 14);
+    ctx.lineTo(cx + 3, lockY + 26);
+    ctx.lineTo(cx - 3, lockY + 26);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Догоревшая свеча: выгорание и усталость.
+  // Низкий огарок с косым оплывшим верхом, без пламени, в лужице воска и с дымком.
+  function drawCandleObject(cx, baseY) {
+    const w = 32;              // ширина огарка
+    const h = 32;              // высота огарка: примерно треть прежней свечи
+    const x = cx - w / 2;
+    const top = baseY - h;     // верх огарка
+
+    // Лужица воска вокруг основания: плоский кремовый овал
+    ctx.fillStyle = C.cream;
+    ctx.beginPath();
+    ctx.ellipse(cx, baseY + 1, 30, 5.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Тело огарка
+    ctx.fillStyle = C.navy;
+    ctx.fillRect(x, top + 3, w, h - 3);
+
+    // Кремовая оплывшая поверхность воска: косой, чуть неровный верх
+    ctx.fillStyle = C.cream;
+    ctx.beginPath();
+    ctx.ellipse(cx, top + 4, w / 2 + 2, 5, -0.13, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Потёки воска по краям: левый длиннее, правый короче
+    roundRect(x + 1, top + 5, 5, 15, 2.5);
+    ctx.fill();
+    roundRect(x + w - 6, top + 6, 5, 10, 2.5);
+    ctx.fill();
+
+    // Тёмный фитиль: короткий, слегка загнутый, без пламени
+    ctx.strokeStyle = C.deep;
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx + 1, top + 3);
+    ctx.quadraticCurveTo(cx + 3, top - 3, cx - 2, top - 9);
+    ctx.stroke();
+
+    // Дым: три маленьких завитка в тоне чуть темнее фона
+    ctx.strokeStyle = C.level2Smoke;
+    ctx.beginPath();
+    ctx.moveTo(cx, top - 16);
+    ctx.quadraticCurveTo(cx - 14, top - 26, cx - 4, top - 36);
+    ctx.quadraticCurveTo(cx + 5, top - 43, cx - 2, top - 50);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(cx + 8, top - 20);
+    ctx.quadraticCurveTo(cx + 20, top - 30, cx + 12, top - 39);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(cx - 10, top - 22);
+    ctx.quadraticCurveTo(cx - 22, top - 30, cx - 16, top - 37);
+    ctx.stroke();
+  }
+
+  // Арка-проход на светлую сторону: должность мечты.
+  // Плоская сцена: тёмно-синяя рамка с закруглённым верхом, светлый проход,
+  // лучи вокруг и дорожка света на полу. Без градиентов и обводок.
+  function drawArchObject(cx, baseY) {
+    const a = CONFIG.layout.end.scene.arch;
+    const x = cx - a.width / 2;   // левый край арки
+    const y = baseY - a.height;   // верх арки
+
+    // Пять лучей вокруг арки: тон чуть темнее фона, чтобы не спорить с ним.
+    // Лучи расходятся веером из верхней части арки.
+    const rayAngles = [158, 124, 90, 56, 22]; // углы в градусах: слева направо
+    const rayCenterY = y + a.width / 2;       // центр скруглённого верха арки
+    ctx.fillStyle = C.winRay;
+
+    for (let i = 0; i < rayAngles.length; i++) {
+      const angle = rayAngles[i] * Math.PI / 180;
+      const dx = Math.cos(angle);
+      const dy = -Math.sin(angle);   // на экране ось Y идёт вниз
+
+      // Основание луча у арки и вершина луча снаружи
+      const bx = cx + dx * 38;
+      const by = rayCenterY + dy * 38;
+      const tx = cx + dx * 98;
+      const ty = rayCenterY + dy * 98;
+
+      // Полуширина основания: поперёк направления луча
+      const px = -dy * 10;
+      const py = dx * 10;
+
+      ctx.beginPath();
+      ctx.moveTo(bx - px, by - py);
+      ctx.lineTo(tx, ty);
+      ctx.lineTo(bx + px, by + py);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Дорожка света на полу перед аркой: светлая трапеция
+    ctx.fillStyle = C.cream;
+    ctx.beginPath();
+    ctx.moveTo(x + 4, baseY - 6);
+    ctx.lineTo(x + a.width - 4, baseY - 6);
+    ctx.lineTo(x + a.width + 30, baseY + 18);
+    ctx.lineTo(x - 30, baseY + 18);
+    ctx.closePath();
+    ctx.fill();
+
+    // Тёмно-синяя рамка арки с закруглённым верхом
+    ctx.fillStyle = C.navy;
+    archPath(cx, baseY, a.width, a.height);
+    ctx.fill();
+
+    // Светлый проход внутри рамки
+    ctx.fillStyle = C.cream;
+    archPath(cx, baseY, a.width - a.frame * 2, a.height - a.frame);
+    ctx.fill();
+
+    // Вторая, меньшая арка чуть светлее — проход уходит в глубину
+    ctx.fillStyle = C.creamLight;
+    archPath(cx, baseY, a.width - a.frame * 2 - a.depth * 2, a.height - a.frame - a.depth);
+    ctx.fill();
+  }
+
+  // Контур арки: прямые бока и закруглённый верх.
+  // Рисуется от левого нижнего угла по часовой стрелке.
+  function archPath(cx, baseY, w, h) {
+    const r = w / 2;            // радиус закруглённого верха
+    const x = cx - w / 2;
+    const y = baseY - h;
+    ctx.beginPath();
+    ctx.moveTo(x, baseY);
+    ctx.lineTo(x, y + r);
+    ctx.arc(cx, y + r, r, Math.PI, 0);
+    ctx.lineTo(x + w, baseY);
+    ctx.closePath();
+  }
+
+  // ---------- Декор экранов предсказаний ----------
+
+  // Частицы декора создаются один раз при первом показе предсказания
+  const decorParticles = { ready: false, confetti: [], snow: [] };
+
+  // Цвет дальних домов на фоне сцены: он же цвет ёлки
+  function sceneCityColor(scene) {
+    return paletteColor(scene.floor);
+  }
+
+  // Ёлка: три плоских треугольника, ствол, звезда, шарики и гирлянда.
+  // Она самая дальняя в сцене, поэтому рисуется первой.
+  function drawDecorTree(scene) {
+    const d = CONFIG.finalDecor.tree;
+    if (!d.enabled) return;
+
+    const sc = CONFIG.layout.end.scene;
+    const h = sc.floorY * d.heightRatio; // высота ёлки
+    const cx = d.x;
+    const baseY = sc.floorY;
+    const halfW = d.width / 2;
+    const color = sceneCityColor(scene);
+
+    // Ярусы: от нижнего к верхнему. Доли высоты от земли и доли ширины.
+    const tiers = [
+      { top: 0.45, base: 0, half: 1 },
+      { top: 0.75, base: 0.35, half: 0.78 },
+      { top: 1, base: 0.62, half: 0.55 }
+    ];
+
+    // Ствол
+    ctx.fillStyle = C.navy;
+    ctx.fillRect(cx - 6, baseY - 10, 12, 10);
+
+    // Крона
+    ctx.fillStyle = color;
+    for (let i = 0; i < tiers.length; i++) {
+      const t = tiers[i];
+      const apexY = baseY - h * t.top;
+      const botY = baseY - h * t.base;
+      const w = halfW * t.half;
+      ctx.beginPath();
+      ctx.moveTo(cx, apexY);
+      ctx.lineTo(cx + w, botY);
+      ctx.lineTo(cx - w, botY);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Шарики: жёлтые и кремовые, по одному на ярус и между ними
+    for (let i = 0; i < d.ornaments; i++) {
+      const yf = 0.12 + (i / Math.max(1, d.ornaments - 1)) * 0.72;
+      const w = treeHalfWidthAt(yf, tiers, halfW);
+      const side = i % 2 === 0 ? -1 : 1;
+      const ox = cx + side * w * 0.52;
+      const oy = baseY - h * yf;
+      ctx.fillStyle = i % 2 === 0 ? C.accent : C.cream;
+      ctx.beginPath();
+      ctx.arc(ox, oy, d.ornamentRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Одна простая гирлянда из кружков поперёк нижнего яруса
+    for (let i = 0; i < d.garlandDots; i++) {
+      const k = d.garlandDots === 1 ? 0.5 : i / (d.garlandDots - 1);
+      const yf = 0.3 + Math.sin(k * Math.PI) * 0.1;
+      const w = treeHalfWidthAt(yf, tiers, halfW);
+      const ox = cx + (k - 0.5) * 2 * w * 0.7;
+      const oy = baseY - h * yf;
+      ctx.fillStyle = C.accent;
+      ctx.beginPath();
+      ctx.arc(ox, oy, d.dotRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Звезда на макушке
+    ctx.fillStyle = C.accent;
+    drawStar(cx, baseY - h - d.starRadius * 0.6, d.starRadius, d.starRadius * 0.45);
+  }
+
+  // Полуширина кроны ёлки на высоте yf (доля высоты от земли)
+  function treeHalfWidthAt(yf, tiers, halfW) {
+    let w = 0;
+    for (let i = 0; i < tiers.length; i++) {
+      const t = tiers[i];
+      if (yf < t.base || yf > t.top) continue;
+      const k = (t.top - yf) / (t.top - t.base);
+      w = Math.max(w, halfW * t.half * k);
+    }
+    return w;
+  }
+
+  // Гирлянда по верхнему краю сцены: дуга из кружков,
+  // цвета чередуются: жёлтый, кремовый, тёмно-синий.
+  function drawDecorGarland() {
+    const d = CONFIG.finalDecor.garland;
+    if (!d.enabled) return;
+
+    const colors = [C.accent, C.cream, C.navy];
+    const steps = Math.floor((W - 24) / d.gap); // промежутков между кружками
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const x = 12 + t * (W - 24);
+      const y = d.topY + Math.sin(t * Math.PI) * d.sag;
+      ctx.fillStyle = colors[i % colors.length];
+      ctx.beginPath();
+      ctx.arc(x, y, d.dotRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Шары на ниточках сверху, разного размера
+  function drawDecorBalls() {
+    const d = CONFIG.finalDecor.balls;
+    if (!d.enabled) return;
+
+    const colors = [C.cream, C.accent, C.navy];
+    const n = Math.min(d.count, d.x.length, d.topY.length);
+    for (let i = 0; i < n; i++) {
+      const scale = d.radiusScale[i] || 1;
+      const r = d.radius * scale;
+      const x = d.x[i];
+      const y = d.topY[i];
+
+      // Ниточка от верхнего края сцены
+      ctx.fillStyle = C.navy;
+      ctx.fillRect(x - 1, 0, 2, y - r);
+
+      // Шар
+      ctx.fillStyle = colors[i % colors.length];
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Падающие конфетти и снег. Живут только в области сцены,
+  // поэтому не задевают текст и кнопку.
+  function drawDecorParticles() {
+    const d = CONFIG.finalDecor;
+    if (!d.confetti.enabled && !d.snow.enabled) return;
+    if (!decorParticles.ready) buildDecorParticles();
+
+    const band = CONFIG.layout.end.scene.floorY; // ниже — уже текст
+    const t = state.decorTime;
+
+    // Конфетти: прямоугольники, кружки и треугольники
+    if (d.confetti.enabled) {
+      for (let i = 0; i < decorParticles.confetti.length; i++) {
+        const p = decorParticles.confetti[i];
+        const y = (p.y + t * p.speed) % band;
+        const half = p.size / 2;
+
+        ctx.save();
+        ctx.translate(p.x, y);
+        ctx.rotate(p.angle + t * 0.9);
+        ctx.fillStyle = p.color;
+
+        if (p.shape === 'rect') {
+          ctx.fillRect(-half, -half / 2, p.size, p.size / 2);
+        } else if (p.shape === 'circle') {
+          ctx.beginPath();
+          ctx.arc(0, 0, half, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.beginPath();
+          ctx.moveTo(0, -half);
+          ctx.lineTo(half, half);
+          ctx.lineTo(-half, half);
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+    }
+
+    // Снежинки: кружки и звёздочки, слегка покачиваются
+    if (d.snow.enabled) {
+      for (let i = 0; i < decorParticles.snow.length; i++) {
+        const p = decorParticles.snow[i];
+        const y = (p.y + t * p.speed) % band;
+        const x = p.x + Math.sin(t * 0.6 + p.phase) * 6;
+
+        ctx.fillStyle = C.cream;
+        if (p.star) {
+          drawStar(x, y, p.size * 1.6, p.size * 0.7);
+        } else {
+          ctx.beginPath();
+          ctx.arc(x, y, p.size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+  }
+
+  // Один раз заполняем частицы случайными местами и скоростями
+  function buildDecorParticles() {
+    const d = CONFIG.finalDecor;
+    const band = CONFIG.layout.end.scene.floorY;
+    decorParticles.confetti = [];
+    decorParticles.snow = [];
+    decorParticles.ready = true;
+
+    if (d.confetti.enabled) {
+      const colors = [C.accent, C.cream, C.navy, C.sky];
+      const shapes = ['rect', 'circle', 'triangle'];
+      for (let i = 0; i < d.confetti.count; i++) {
+        decorParticles.confetti.push({
+          x: Math.random() * W,
+          y: Math.random() * band,
+          size: d.confetti.sizeMin + Math.random() * (d.confetti.sizeMax - d.confetti.sizeMin),
+          speed: d.confetti.speed * (0.7 + Math.random() * 0.6),
+          angle: Math.random() * Math.PI * 2,
+          color: colors[i % colors.length],
+          shape: shapes[i % shapes.length]
+        });
+      }
+    }
+
+    if (d.snow.enabled) {
+      for (let i = 0; i < d.snow.count; i++) {
+        decorParticles.snow.push({
+          x: Math.random() * W,
+          y: Math.random() * band,
+          size: d.snow.sizeMin + Math.random() * (d.snow.sizeMax - d.snow.sizeMin),
+          speed: d.snow.speed * (0.7 + Math.random() * 0.6),
+          phase: Math.random() * Math.PI * 2,
+          star: i % 2 === 0
+        });
+      }
+    }
+  }
+
+  // Лампочка: тёмно-синяя колба, кремовый цоколь, позади круг жёлтого света
+  function drawBulbObject(cx, baseY) {
+    const lightR = 58;
+    const glassR = 38;
+    const glassY = baseY - 76;
+    const baseTop = baseY - 30;
+
+    // Свет позади
+    ctx.fillStyle = C.accent;
+    ctx.beginPath();
+    ctx.arc(cx, glassY, lightR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Колба
+    ctx.fillStyle = C.navy;
+    ctx.beginPath();
+    ctx.arc(cx, glassY, glassR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Кремовая шейка и цоколь
+    ctx.fillStyle = C.cream;
+    ctx.fillRect(cx - 14, glassY + glassR - 14, 28, baseTop - (glassY + glassR - 14) + 2);
+    roundRect(cx - 15, baseTop, 30, baseY - baseTop, 4);
+    ctx.fill();
+
+    // Тёмно-синие кольца на цоколе
+    ctx.fillStyle = C.navy;
+    ctx.fillRect(cx - 15, baseTop + 8, 30, 3);
+    ctx.fillRect(cx - 15, baseTop + 18, 30, 3);
+  }
+
+  // Крупная молния: тёмно-синяя, позади круг жёлтого света и искры
+  function drawBoltObject(cx, baseY) {
+    const lightR = 56;
+    const cy = baseY - 58;
+    const s = 64; // размер молнии
+
+    // Свет позади
+    ctx.fillStyle = C.accent;
+    ctx.beginPath();
+    ctx.arc(cx, cy, lightR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Маленькие жёлтые искры вокруг
+    const sparks = [
+      { x: -66, y: -58, r: 4 },
+      { x: -40, y: -78, r: 3 },
+      { x: 52, y: -68, r: 4.5 },
+      { x: 62, y: 16, r: 3.5 },
+      { x: -60, y: 24, r: 3 }
+    ];
+    ctx.fillStyle = C.accent;
+    for (let i = 0; i < sparks.length; i++) {
+      const sp = sparks[i];
+      ctx.beginPath();
+      ctx.arc(cx + sp.x, cy + sp.y, sp.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Молния
+    ctx.fillStyle = C.navy;
+    ctx.beginPath();
+    ctx.moveTo(cx + s * 0.22, cy - s * 0.78);
+    ctx.lineTo(cx - s * 0.48, cy + s * 0.08);
+    ctx.lineTo(cx - s * 0.02, cy + s * 0.08);
+    ctx.lineTo(cx - s * 0.22, cy + s * 0.78);
+    ctx.lineTo(cx + s * 0.48, cy - s * 0.1);
+    ctx.lineTo(cx + s * 0.02, cy - s * 0.1);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Два человечка рядом, позади два пересекающихся кремовых круга
+  function drawPeopleObject(cx, baseY) {
+    const r = 40;           // радиус кругов
+    const cy = baseY - 78;  // центр кругов
+    const dx = 26;          // насколько человечки разнесены от центра
+
+    // Диаграмма Венна: два кремовых круга, правый чуть светлее,
+    // чтобы было видно их пересечение
+    ctx.fillStyle = C.cream;
+    ctx.beginPath();
+    ctx.arc(cx - 16, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = C.creamLight;
+    ctx.beginPath();
+    ctx.arc(cx + 16, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Человечки: голова и плечи
+    const headR = 13;
+    ctx.fillStyle = C.navy;
+    for (let i = -1; i <= 1; i += 2) {
+      const px = cx + i * dx;
+      ctx.beginPath();
+      ctx.arc(px, cy - 26, headR, 0, Math.PI * 2);
+      ctx.fill();
+      roundRect(px - 16, cy - 8, 32, 42, 10);
+      ctx.fill();
+    }
+  }
+
+  // Бумажный самолётик летит вверх-вправо, за ним след из кремовых точек
+  function drawPlaneObject(cx, baseY) {
+    const cy = baseY - 76;
+
+    // Пара облаков позади
+    drawCloud(cx - 158, cy - 46, 50, C.cloud);
+    drawCloud(cx + 56, cy + 18, 34, C.cloud);
+
+    // След из кремовых точек: уходит вниз-влево
+    const trail = [
+      { x: -56, y: 22, r: 5 },
+      { x: -74, y: 32, r: 4.2 },
+      { x: -92, y: 42, r: 3.4 },
+      { x: -108, y: 50, r: 2.6 }
+    ];
+    ctx.fillStyle = C.cream;
+    for (let i = 0; i < trail.length; i++) {
+      ctx.beginPath();
+      ctx.arc(cx + trail[i].x, cy + trail[i].y, trail[i].r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Самолётик
+    const s = 52;
+    ctx.fillStyle = C.navy;
+    ctx.beginPath();
+    ctx.moveTo(cx + s * 0.8, cy - s * 0.62);
+    ctx.lineTo(cx - s * 0.8, cy + s * 0.02);
+    ctx.lineTo(cx + s * 0.1, cy + s * 0.34);
+    ctx.lineTo(cx + s * 0.3, cy + s * 0.8);
+    ctx.closePath();
+    ctx.fill();
+
+    // Кремовая складка крыла
+    ctx.fillStyle = C.cream;
+    ctx.beginPath();
+    ctx.moveTo(cx + s * 0.8, cy - s * 0.62);
+    ctx.lineTo(cx - s * 0.3, cy + s * 0.12);
+    ctx.lineTo(cx + s * 0.1, cy + s * 0.34);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawEnd() {
     const e = CONFIG.layout.end;
     const screen = endScreenContent();
+    const scene = endSceneName();
+
+    if (scene) {
+      // Переход, поражения и победа: плоская сцена в верхней части поля
+      drawEndScene(scene);
+    } else {
+      // Финал: прежний бежевый фон уровня 2
+      const p = levelPalette(2);
+      ctx.fillStyle = p.bg;
+      ctx.fillRect(0, 0, W, H);
+      drawClouds(state.cloudOffset, p.cloud);
+      drawGround(false);
+    }
 
     // Заголовок — одна строка. Если не помещается по ширине,
     // шрифт немного уменьшается.
@@ -1175,7 +1864,17 @@
     ctx.fillStyle = C.navy;
     roundRect(btn.x, btn.y, btn.w, btn.h, 14);
     ctx.fill();
-    drawFitText(screen.button, W / 2, btn.y + btn.h / 2 + 6, 17, 'bold', F.text, C.cream, btn.w - 24);
+
+    // Строки текста на кнопке. Перенос задаётся в content.js символом \n.
+    // Блок строк стоит по центру кнопки.
+    const lines = endButtonLines(screen.button);
+    const buttonFirstY = btn.y + btn.h / 2 + 6 - (lines.length - 1) * e.buttonLineHeight / 2;
+    for (let i = 0; i < lines.length; i++) {
+      drawFitText(
+        lines[i], W / 2, buttonFirstY + i * e.buttonLineHeight,
+        e.buttonFontSize, 'bold', F.text, C.cream, btn.w - e.buttonPaddingX * 2
+      );
+    }
   }
 
   function draw() {
@@ -2107,6 +2806,7 @@
     } else {
       // На экранах финала и поражения двигаются только облака
       state.cloudOffset += motion.menuCloudSpeed * dt;
+      state.decorTime += dt;
     }
   }
 
@@ -2152,6 +2852,69 @@
   if (window.ResizeObserver) {
     new ResizeObserver(resize).observe(document.getElementById('stage'));
   }
+
+  // ===== TEMP: ссылки для просмотра экранов. Удалить после проверки. =====
+  // index.html?screen=transition открывает нужный экран сразу.
+  // Необязательный &hero=boy или &hero=girl выбирает героя.
+  function applyDebugScreen() {
+    if (!CONFIG.debugScreens) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const name = params.get('screen');
+    if (!name) return;
+
+    // Герой из ссылки
+    const heroId = params.get('hero');
+    for (let i = 0; i < CONTENT.heroes.length; i++) {
+      if (CONTENT.heroes[i].id === heroId) state.hero = i;
+    }
+
+    // Счётчики бонусов: нужная категория должна победить
+    const cats = CONTENT.bonuses.categories;
+    function setScores(winner) {
+      state.bonusTotal = 0;
+      state.bonusByCategory = {};
+      for (let i = 0; i < cats.length; i++) {
+        const value = cats[i].id === winner ? 12 : 3;
+        state.bonusByCategory[cats[i].id] = value;
+        state.bonusTotal += value;
+      }
+    }
+
+    if (name === 'transition') {
+      state.level = 1;
+      state.screen = 'transition';
+    } else if (name === 'lose1') {
+      state.level = 1;
+      state.screen = 'lose';
+    } else if (name === 'lose2') {
+      state.level = 2;
+      state.screen = 'lose';
+    } else if (name === 'win') {
+      state.level = 2;
+      state.screen = 'win2';
+    } else if (name.indexOf('final-') === 0) {
+      // final-knowledge, final-contacts, final-energy, final-courage
+      const category = name.slice(6);
+
+      // Категория должна быть из content.js
+      let known = false;
+      for (let i = 0; i < cats.length; i++) {
+        if (cats[i].id === category) known = true;
+      }
+      if (!known) return;
+
+      // Выставляем счётчики и выбираем предсказание обычной логикой
+      setScores(category);
+      state.level = 2;
+      state.prediction = pickPrediction();
+      state.screen = 'final';
+    }
+  }
+  // ===== конец TEMP =====
+
+  // TEMP: применяем экран из ссылки до первой отрисовки
+  applyDebugScreen();
 
   resize();
   startLoop();
